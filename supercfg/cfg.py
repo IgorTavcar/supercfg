@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Tuple
 from typing import Union
 
+_NONE_PATTERN = re.compile(r'None')
 _INT_PATTERN = re.compile(r'^([0-9_]+)$')
 _INT_EXP_PATTERN = re.compile(r'^([0-9_]+e[0-9_]+)$')
 _FLOAT_EXP_PATTERN = re.compile(r'^([0-9_]+e-[0-9_]+)$')
@@ -64,6 +65,8 @@ class Cfg:
 
     @staticmethod
     def parse(path: str):
+        if not os.path.exists(path):
+            raise Exception('no such file: {}'.format(path))
         cfg = configparser.ConfigParser()
         cfg.read(path)
         return Cfg(path, cfg)
@@ -143,6 +146,16 @@ class Section:
                 return ref['/'.join(path[1:])]
             return None
 
+    @property
+    def to_dict(self):
+        build = {'name': self.name, 'clazz': self.clazz}
+        for k, v in self.fields.items():
+            if isinstance(v, Section):
+                build[k] = v.dict
+            else:
+                build[k] = v
+        return build
+
     def get(self, key: str, default_value):
         return self[key] if self[key] is not None else default_value
 
@@ -192,6 +205,9 @@ class Section:
             if m:
                 build[key] = re.compile(m.group(1))
                 continue
+            if re.match(_NONE_PATTERN, value):
+                build[key] = None
+                continue
             if re.match(_INT_PATTERN, value):
                 build[key] = int(value)
                 continue
@@ -212,12 +228,12 @@ class Section:
                 build2 = []
                 for item in m.group(1).split(','):
                     value2 = item.strip()
-                    if value2 == 'None':
-                        build2.append(None)
-                        continue
                     m = re.match(_QUOTED_PATTERN, value2)
                     if m:
                         build2.append(m.group(1))
+                        continue
+                    if re.match(_NONE_PATTERN, value):
+                        build2.append(None)
                         continue
                     if re.match(_INT_PATTERN, value2):
                         build2.append(int(value2))
