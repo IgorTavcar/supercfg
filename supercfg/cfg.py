@@ -151,7 +151,7 @@ class Section:
         build = {'name': self.name, 'clazz': self.clazz}
         for k, v in self.fields.items():
             if isinstance(v, Section):
-                build[k] = v.dict
+                build[k] = v.to_dict
             else:
                 build[k] = v
         return build
