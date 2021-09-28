@@ -7,7 +7,7 @@ requirements = []
 
 setup(
     name="supercfg",
-    version="0.0.1",
+    version="0.0.2",
     author="Igor Tavčar",
     author_email="igor.tavcar@gmail.com",
     description="A package to support INI conf language with support of int, float, bool, str, struct reference and "
