@@ -4,13 +4,13 @@ from supercfg import Cfg
 """
 [a::1]
 filed_a = 100_000
-filed_b = (1, 2, 3)
+filed_b = [1, 2, 3]
 pattern_1 = pattern:^hello: (\d)$
 ref_b = b::1
 
 [a::2]
 filed_a = 30_000
-filed_b = (1, 2, 5)
+filed_b = [1, 2, 5]
 pattern_1 = pattern:^hello: (\d{2})$
 ref_b = b::1
 

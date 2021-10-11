@@ -38,7 +38,7 @@ model = model::minigpt_articles-small
 max_epochs = 10
 batch_size = 64
 learning_rate = 3e-4
-betas = (0.9, 0.95)
+betas = [0.9, 0.95]
 grad_norm_clip = 1.0
 ; # only applied on matmul weights
 weight_decay = 0.1
@@ -80,15 +80,15 @@ window_size = 64
 window_step = 0.5
 alignment = space
 adaptive = true
-edge_tokens = (<|eot|>, <|eot|>, false)
+edge_tokens = [<|eot|>, <|eot|>, false]
 
 [dataset::articles-mini-part-64]
 fs = fs::articles
 importer = importer::articles_mini_part-no_sections
 layout = layout::64-0.5
 tag = "0.5"
-target_tasks = (causal_language_modeling, masked_language_modeling)
-parts = (train=0.9, test=0.1)
+target_tasks = [causal_language_modeling, masked_language_modeling]
+parts = [train=0.9, test=0.1]
 ```
 
 For more code see tests/test_supercfg.py
@@ -102,13 +102,13 @@ from supercfg import Cfg
 """
 [a::1]
 filed_a = 100_000
-filed_b = (1, 2, 3)
+filed_b = [1, 2, 3]
 pattern_1 = pattern:^hello:\s*\d$
 ref_b = b::1
 
 [a::2]
 filed_a = 30_000
-filed_b = (1, 2, 5)
+filed_b = [1, 2, 5]
 pattern_1 = pattern:^hello:\s*(\d{2})$
 ref_b = b::1
 

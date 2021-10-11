@@ -6,24 +6,24 @@ from pathlib import Path
 from typing import Tuple
 from typing import Union
 
-_NONE_PATTERN = re.compile(r'None')
+_SUPERCLASS_PATTERN = re.compile(r'^[^(]+\(([^)]+)\)')
+_NONE_PATTERN = re.compile(r'None|none|NONE')
 _INT_PATTERN = re.compile(r'^([0-9_]+)$')
 _INT_EXP_PATTERN = re.compile(r'^([0-9_]+e[0-9_]+)$')
 _FLOAT_EXP_PATTERN = re.compile(r'^([0-9_]+e-[0-9_]+)$')
 _FLOAT_PATTERN = re.compile(r'^[0-9_]*\.[0-9_]*$')
 _BOOL_PATTERN = re.compile(r'^(true|false)$')
-_LIST_PATTERN = re.compile(r'^\(([^)]+)\)$')
+_LIST_PATTERN = re.compile(r'^\[([^]]+)\]$')
 _QUOTED_PATTERN = re.compile(r"'([^']*)'|\"([^\"]*)\"")
 _RE_PATTERN = re.compile(r"pattern:(.+)")
 _SECT_PATTERN = re.compile(r"(.+)::(.+)")
 
 
 class Cfg:
-    def __init__(self, path, parser, supports_properties: bool = True):
+    def __init__(self, path, parser):
         self._path = path
         self._parser = parser
         self._sections = None
-        self._supports_properties = supports_properties
 
     @property
     def path(self) -> str:
@@ -44,9 +44,6 @@ class Cfg:
 
         self._sections = self._parse_sections()
         self._resolve_sect_refs()
-
-        if self._supports_properties:
-            self._set_sect_properties()
 
         return self._sections
 
@@ -95,10 +92,6 @@ class Cfg:
         for _, sect in self._sections.items():
             sect.resolve_refs()
 
-    def _set_sect_properties(self):
-        for _, sect in self._sections.items():
-            sect.set_properties()
-
     def _value_at(self, section, path: [str]):
         if len(path) == 0:
             return section
@@ -123,6 +116,9 @@ class _Ref:
     cfg: Cfg = None
     path: str = None
 
+    def __hash__(self) -> int:
+        return hash(self.path)
+
 
 @dataclass
 class Section:
@@ -130,7 +126,28 @@ class Section:
     name: str = None
     fields: dict = None
 
+    _superclass_id = None
+    _super = None
+    _all_fields: dict = None
+
+    def __post_init__(self):
+        m = _SUPERCLASS_PATTERN.match(self.name)
+        if m:
+            value = m[1]
+            if '::' not in value:
+                self._superclass_id = self.clazz + '::' + value
+            else:
+                self._superclass_id = value
+            self.name = self.name[:-(len(value) + 2)]
+
     def __getitem__(self, item):
+        if isinstance(item, int):
+            if item == 0:
+                return 'clazz'
+            if item == 1:
+                return 'name'
+            return list(self.all_fields.keys())[item - 2]
+
         path = item.split('/')
         if len(path) == 1:
             if item == 'clazz':
@@ -139,17 +156,32 @@ class Section:
                 return self.name
             if item not in self.fields:
                 return None
-            return self.fields[item]
+            return self.all_fields[item]
         else:
             ref = self[path[0]]
             if isinstance(ref, Section):
                 return ref['/'.join(path[1:])]
             return None
 
+    def __len__(self):
+        return 2 + len(self.all_fields)
+
+    @property
+    def all_fields(self) -> dict:
+        if self._all_fields:
+            return self._all_fields
+        if self._super:
+            build = self._super.all_fields
+        else:
+            build = {}
+        build.update(self.fields)
+        self._all_fields = build
+        return build
+
     @property
     def to_dict(self):
         build = {'name': self.name, 'clazz': self.clazz}
-        for k, v in self.fields.items():
+        for k, v in self.all_fields.items():
             if isinstance(v, Section):
                 build[k] = v.to_dict
             else:
@@ -160,23 +192,13 @@ class Section:
         return self[key] if self[key] is not None else default_value
 
     def resolve_refs(self):
-        for field, value in self.fields.copy().items():
-            if isinstance(value, _Ref):
-                self.fields[field] = value.cfg[value.path]
-            elif isinstance(value, list):
-                for i, value2 in enumerate(value.copy()):
-                    if isinstance(value2, _Ref):
-                        value[i] = value2.cfg[value2.path]
-                    elif isinstance(value2, Section):
-                        value2.resolve_refs()
-            elif isinstance(value, Section):
-                value.resolve_refs()
+        if self._super and isinstance(self._super, _Ref):
+            self._super = self._super.cfg[self._super.path]
 
-    def set_properties(self):
-        for field, value in self.fields.items():
-            if isinstance(value, Section):
-                value.set_properties()
-            setattr(self, field, value) # <-- punch line
+        for field, value in self.fields.copy().items():
+            self.fields[field] = Section._resolve_ref(value)
+
+        self._set_properties()
 
     @staticmethod
     def parse(cfg: Cfg, key: str):
@@ -194,75 +216,71 @@ class Section:
 
         for key in sorted(sect.keys()):
             value = sect[key].strip()
-            if value in parser:
-                build[key] = Section.parse(cfg, value)
-                continue
-            m = re.match(_QUOTED_PATTERN, value)
-            if m:
-                build[key] = m.group(1) if m.group(1) is not None else m.group(2)
-                continue
-            m = re.match(_RE_PATTERN, value)
-            if m:
-                build[key] = re.compile(m.group(1))
-                continue
-            if re.match(_NONE_PATTERN, value):
-                build[key] = None
-                continue
-            if re.match(_INT_PATTERN, value):
-                build[key] = int(value)
-                continue
-            if re.match(_INT_EXP_PATTERN, value):
-                build[key] = int(float(value))
-                continue
-            if re.match(_FLOAT_PATTERN, value):
-                build[key] = float(value)
-                continue
-            if re.match(_FLOAT_EXP_PATTERN, value):
-                build[key] = float(value)
-                continue
-            if re.match(_BOOL_PATTERN, value):
-                build[key] = _bool_value(value)
-                continue
-            m = re.match(_LIST_PATTERN, value)
-            if m:
-                build2 = []
-                for item in m.group(1).split(','):
-                    value2 = item.strip()
-                    m = re.match(_QUOTED_PATTERN, value2)
-                    if m:
-                        build2.append(m.group(1))
-                        continue
-                    if re.match(_NONE_PATTERN, value):
-                        build2.append(None)
-                        continue
-                    if re.match(_INT_PATTERN, value2):
-                        build2.append(int(value2))
-                        continue
-                    if re.match(_INT_EXP_PATTERN, value2):
-                        build2.append(int(float(value)))
-                        continue
-                    if re.match(_FLOAT_PATTERN, value2):
-                        build2.append(float(value2))
-                        continue
-                    if re.match(_FLOAT_EXP_PATTERN, value2):
-                        build2.append(float(value2))
-                        continue
-                    if re.match(_BOOL_PATTERN, value2):
-                        build2.append(_bool_value(value2))
-                        continue
-                    ref = Section._reference(cfg, value2)
-                    if ref is not None:
-                        build2.append(ref)
-                    else:
-                        build2.append(value2)
-                build[key] = build2
-                continue
-            ref = Section._reference(cfg, value)
-            if ref is not None:
-                build[key] = ref
-                continue
-            build[key] = value
-        return Section(domain, name, build)
+            build[key] = Section._parse_item(cfg, value, parser)
+
+        created = Section(domain, name, build)
+        if created._superclass_id:
+            created._super = Section._reference(cfg, created._superclass_id)
+        return created
+
+    @staticmethod
+    def _parse_items(cfg: Cfg, items: [any], parser: configparser.ConfigParser):
+        build = []
+        for item in items:
+            value = item.strip()
+            build.append(Section._parse_item(cfg, value, parser))
+        return build
+
+    #
+
+    @staticmethod
+    def _parse_item(cfg: Cfg, value: any, parser: configparser.ConfigParser):
+        if value in parser:
+            return Section.parse(cfg, value)
+
+        m = re.match(_QUOTED_PATTERN, value)
+        if m:
+            return m.group(1) if m.group(1) is not None else m.group(2)
+        m = re.match(_RE_PATTERN, value)
+        if m:
+            return re.compile(m.group(1))
+        if re.match(_NONE_PATTERN, value):
+            return None
+        if re.match(_INT_PATTERN, value):
+            return int(value)
+        if re.match(_INT_EXP_PATTERN, value):
+            return int(float(value))
+        if re.match(_FLOAT_PATTERN, value):
+            return float(value)
+        if re.match(_FLOAT_EXP_PATTERN, value):
+            return float(value)
+        if re.match(_BOOL_PATTERN, value):
+            return Section._bool_value(value)
+        if value.startswith('[') and value.endswith(']'):
+            # todo: rewrite
+            expression = value[1:-1]
+            return Section._parse_items(cfg, Section._split_expression(expression), parser)
+        ref = Section._reference(cfg, value)
+        if ref is not None:
+            return ref
+        return value
+
+    @staticmethod
+    def _resolve_ref(value: any):
+        if isinstance(value, _Ref):
+            return Section._resolve_ref(value.cfg[value.path])
+        if isinstance(value, list):
+            for i, inner_value in enumerate(value.copy()):
+                if isinstance(inner_value, _Ref):
+                    value[i] = Section._resolve_ref(inner_value)
+                elif isinstance(inner_value, list):
+                    value[i] = Section._resolve_ref(inner_value)
+                elif isinstance(inner_value, Section):
+                    inner_value.resolve_refs()
+        if isinstance(value, Section):
+            value.resolve_refs()
+            return value
+        return value
 
     @staticmethod
     def _reference(cfg: Cfg, qualifier: str):
@@ -282,6 +300,34 @@ class Section:
         return _Ref(cfg, qualifier)
 
     @staticmethod
+    def _split_expression(expression: str) -> [str]:
+        build = []
+        item = ""
+        capture_until = []
+        for char in expression:
+            if char == '[':
+                capture_until.append(']')
+            elif char == '\'' and (len(capture_until) == 0 or capture_until[-1] != '\''):
+                capture_until.append('\'')
+            # elif char == '{':
+            #     capture_until.append('}')
+            elif len(capture_until) > 0 and char == capture_until[-1]:
+                capture_until.pop()
+            elif len(capture_until) == 0 and char == ',':
+                item = item.strip()
+                if len(item) > 0:
+                    build.append(item)
+                    item = ""
+                continue
+            item += char  # capture
+
+        item = item.strip()
+        if len(item) > 0:
+            build.append(item)
+
+        return build
+
+    @staticmethod
     def _split_at_2colons(key: str) -> (str, str):
         parts = key.split('::')
         if len(parts) == 1:
@@ -299,8 +345,15 @@ class Section:
             return None
         return parts[0].strip(), parts[1].strip()
 
+    @staticmethod
+    def _bool_value(token: Union[None, str], default=False) -> bool:
+        if token is None:
+            return default
+        return token.lower() == 'true'
 
-def _bool_value(token: Union[None, str], default=False) -> bool:
-    if token is None:
-        return default
-    return token.lower() == 'true'
+    def _set_properties(self):
+        for field, value in self.all_fields.items():
+            if isinstance(value, Section):
+                value._set_properties()
+            setattr(self, field, value)  # <-- punch line
+
