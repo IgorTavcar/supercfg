@@ -1,137 +1,199 @@
 # Super Config
-This module is based on the ConfigParser class and provides a basic configuration language (in MS INI format) with structs of fields with types:
-* int
-* float
+This module is based on the ConfigParser class and provides a basic configuration language (in MS INI format) with structs supporting field types:
 * string
-* exp int (3e10)
-* exp float (3e-7)
+* int 
+* float
 * bool
-* list
+* collections (nested)
+  * array
+  * dict
 * compiled regex pattern
-* section reference
-* field reference
-* cross-file section/field reference
+* cross-references (in-file and cross-file)
+  * section reference
+  * field reference
+* templating (in-file and cross-file)
+  * section inheritance
 
 
 ## Example
-File `test_minigpt_trainer_builder.cfg`
+File `data_delo.cfg`
 ```ini
-[model::minigpt_articles-small]
-embd_pdrop = 0.1
-resid_pdrop = 0.1
-attn_pdrop = 0.1
-n_layer = 8
-n_head = 8
-n_embd = 512
-; vocab_size
-; ... derived from tokenizer
-vocab_size = dataset::articles-mini-part-64/layout/tokenizer/vocab_size@articles_mini_part
-; block_size aka max_seq_len
-; ... derived from layout
-block_size = dataset::articles-mini-part-64/layout/window_size@articles_mini_part
+[fs::solaris]
+root = /Users/tigor/Projects/DeepWriter/pipelines
 
-[trainer::minigpt_articles-mini-part-64]
-fs = fs::articles@articles
-dataset = dataset::articles-mini-part-64@articles_mini_part
-model = model::minigpt_articles-small
-;
-max_epochs = 10
-batch_size = 64
-learning_rate = 3e-4
-betas = [0.9, 0.95]
-grad_norm_clip = 1.0
-; # only applied on matmul weights
-weight_decay = 0.1
-; learning rate decay params:
-; ... linear warmup followed by cosine decay to 10% of original
-lr_decay = false
-; these two numbers come from the GPT-3 paper,
-; ... but may not be good defaults elsewhere
-warmup_tokens = 375e6
-; ... at what point we reach 10% of original LR
-final_tokens = 260e9
+[fs::hal00]
+root = /home/tigor/projects/deep_writer/pipelines
 
-```
+[fsd::delo_articles]
+path = delo/articles
 
-File `articles_mini_part.cfg`
-```ini
-[fs::articles]
-root = ../data
-domain = 'articles'
+[tokenizer::roberta]
+factory = tokenizer.RobertaTokenizerFactory
+vocab_size = None
+min_frequency = 1
+initial_alphabet = tokenizers.pre_tokenizers.ByteLevel.alphabet
+special_tokens = [ <|eop|>, <|sec|>, <|eos|>, <|eot|> ]
+show_progress = false
 
-[importer::articles_mini_part-no_sections]
-source = ../data/corpus/slovenian/part1/raw_text_only_digital_text_chunks_mini_part
-source_pattern = pattern:^chunk\.[a-z]{3}$
-destination_fs = fs::articles
-destination_ds = articles_part-no_sections
-process = process.IDXArticleImporterProcess
-article_sections = false
+[tokenizer::roberta-32000(roberta)]
+vocab_size = 32000
 
-[tokenizer::gpt-bpe-5_000]
-fs = fs::articles
-target_model = gpt
-vocab_size = 5_000
-add_prefix_space = true
+[tokenizer::roberta-16384(roberta)]
+vocab_size = 16384
 
-[layout::64-0.5]
-tokenizer = tokenizer::gpt-bpe-5_000
-process = 'process.Aligner'
-window_size = 64
+[ds::delo_roberta]
+fsd = fsd::delo_articles
+builder = delo_articles_dataset.py
+ds_name = all
+subdir = delo_roberta
+builder_include_only_text_sections = true
+builder_section_separation = PARAGRAPH_SEPARATOR
+builder_paragraph_separator = '<|eop|>'
+seed = 666
+;builder_text_preprocessor_rigidity = HIGH
+
+[ds::delo_roberta-part(delo_roberta)]
+ds_name = part
+subdir = delo_roberta-part
+
+[slider::text-space-0.5]
+window_size = None
 window_step = 0.5
-alignment = space
+alignment = SPACE
 adaptive = true
-edge_tokens = [<|eot|>, <|eot|>, false]
+leading_edge = None
+trailing_edge = None
+edge_for_every_sample = None
+edge_insets = None
+#
+slide_func = 'functions.slide_text_batch'
+batch_size = 512
 
-[dataset::articles-mini-part-64]
-fs = fs::articles
-importer = importer::articles_mini_part-no_sections
-layout = layout::64-0.5
-tag = "0.5"
-target_tasks = [causal_language_modeling, masked_language_modeling]
-parts = [train=0.9, test=0.1]
+[slider::roberta-512(text-space-0.5)]
+edge_insets = 1
+window_size = 512
+
+[tokenized-ds::tokens-64]
+seq_len = 64
+truncation = false
+
+[tokenized-ds::tokens-512]
+seq_len = 512
+truncation = false
+
+[splitter::90-10]
+test_part = 0.1
+seed = 1111
+validation_part = None
+
+[splitter::90-5-5]
+test_part = 0.1
+validation_part = 0.5
+seed = 1111
+
+[function::wordcount]
+function = 'functions.dump_wordcount_table'
+filename = wordcount.txt
+
+[function::sentencizer-slo]
+function = 'sentencizer.sentencize_batch'
+sentence_separator = <|eos|>
+rigidity = HIGH
+cpu_load = 0.4
+remove_columns = None
+batch_size = 256
+
+[function::normalizer]
+function = text_soup.normalize_batch
+rigidity = HIGH
+cpu_load = 0.4
+# remove all columns
+remove_columns = [*]
+batch_size = 256
+
+[ds::delo_roberta-tokens-preloaded]
+fs = fs::hal00
+fsd = fsd::delo_articles
+dir = 'delo_roberta/normalizer/sentencizer_slo/roberta_512/tokens_512/90-5-5/'
+segments = ('test', 'train', 'validation')
+
+[ds::delo_roberta-part-tokens-preloaded]
+fs = fs::hal00
+fsd = fsd::delo_articles
+dir = 'delo_roberta-part/normalizer/sentencizer_slo/roberta_512/tokens_512/90-5-5'
+segments = ['test', 'train', 'validation']
+
+[pipeline::delo_roberta-part]
+fs = fs::solaris
+fsd = fsd::delo_articles
+build = [ds::delo_roberta-part, tokenizer::roberta-16384, function::normalizer, function::sentencizer-slo, slider::roberta-512, tokenized-ds::tokens-512, splitter::90-5-5]
+cpu_load = 0.85
+
+[pipeline::delo_roberta]
+fs = fs::hal00
+fsd = fsd::delo_articles
+build = [ds::delo_roberta, tokenizer::roberta-16384, function::normalizer, function::sentencizer-slo, slider::roberta-512, tokenized-ds::tokens-512, splitter::90-5-5]
+cpu_load = 0.9
+
+
 ```
 
-For more code see tests/test_supercfg.py
+File `train.cfg`
+```ini
+[pipeline::train-delo_roberta]
+fs=fs::hal00@data-delo
+fsd = fsd::delo_articles@data-delo
+build = [ds::delo_roberta-tokens-preloaded@data-delo]
+cpu_load = 0.9
+
+[pipeline::train-delo_roberta-part]
+fs=fs::solaris@data-delo
+fsd = fsd::delo_articles@data-delo
+build = [ds::delo_roberta-part-tokens-preloaded@data-delo]
+cpu_load = 0.9
+```
+
+### For more examples see tests/test_cfg.py
 
 ## Usage
 
 ```python
-from supercfg import Cfg
-
-# file: cfg/example.cfg
+# file: conf/example.cfg
 """
-[a::1]
-filed_a = 100_000
+[a::template]
+field_a = 99_999
+
+[a::1(template)]
 filed_b = [1, 2, 3]
-pattern_1 = pattern:^hello:\s*\d$
+pattern_1 = pattern:^hello:\s*(\d)+$
 ref_b = b::1
 
-[a::2]
-filed_a = 30_000
-filed_b = [1, 2, 5]
-pattern_1 = pattern:^hello:\s*(\d{2})$
-ref_b = b::1
+[a::2(1)]
+filed_b = [3, 2, 1]
+ref_b = b::2
 
 [b::1]
 say_1 = 'all those moments will be lost in time ...'
 say_2 =  c::x/somebody
 
+
+[b::2(1)]
+say_1 = 'other text'
+say_2 =  c::x/somebody_else
+
 [c::x]
 somebody = "say something else"
+somebody_else = "say the same"
 """
 
 
 def main():
-    cfg = Cfg.parse('cfg/example.cfg')
-    a = cfg['a::1']
-    print(a.ref_b.say_2)
-    print(a.pattern_1.match('hello: 1') is not None)
-    a = cfg['a::2']
-    print(a.filed_b[:-1])
-    print(a['ref_b/say_1'])
-    print(a.pattern_1.match('hello:  11') is not None)
+    cfg = Cfg.parse('conf/example.cfg')
+    a1 = cfg['a::1']
+    print(a1.all_fields)
+    a2 = cfg['a::2']
+    print(a2.pattern_1.match('hello:  11') is not None)
 
 
 if __name__ == '__main__':
     main()
-

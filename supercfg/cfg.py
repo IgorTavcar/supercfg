@@ -1,6 +1,7 @@
 import configparser
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
@@ -8,15 +9,17 @@ from typing import Union
 
 _SUPERCLASS_PATTERN = re.compile(r'^[^(]+\(([^)]+)\)')
 _NONE_PATTERN = re.compile(r'None|none|NONE')
-_INT_PATTERN = re.compile(r'^([0-9_]+)$')
-_INT_EXP_PATTERN = re.compile(r'^([0-9_]+e[0-9_]+)$')
-_FLOAT_EXP_PATTERN = re.compile(r'^([0-9_]+e-[0-9_]+)$')
-_FLOAT_PATTERN = re.compile(r'^[0-9_]*\.[0-9_]*$')
+_INT_PATTERN = re.compile(r'^([+-]?[0-9_]+)$')
+_INT_EXP_PATTERN = re.compile(r'^([+-]?[0-9_]+e[+]?[0-9_]+)$')
+_FLOAT_PATTERN = re.compile(r'^([+-]?[0-9_]*\.[0-9_]*(e[+-]?[0-9_]+)?)$')
+_FLOAT_PATTERN_2 = re.compile(r'^([+-]?[0-9_]+e-[0-9_]+)$')
 _BOOL_PATTERN = re.compile(r'^(true|false)$')
-_LIST_PATTERN = re.compile(r'^\[([^]]+)\]$')
-_QUOTED_PATTERN = re.compile(r"'([^']*)'|\"([^\"]*)\"")
+_QUOTED_PATTERN = re.compile(r"'(.*)'|\"(.*)\"")
 _RE_PATTERN = re.compile(r"pattern:(.+)")
 _SECT_PATTERN = re.compile(r"(.+)::(.+)")
+
+
+#
 
 
 class Cfg:
@@ -67,6 +70,12 @@ class Cfg:
         cfg = configparser.ConfigParser()
         cfg.read(path)
         return Cfg(path, cfg)
+
+    @staticmethod
+    def parse_string(script):
+        cfg = configparser.ConfigParser()
+        cfg.read_string(script)
+        return Cfg("tmp/{}.cfg".format(str(uuid.uuid4())), cfg)
 
     #
 
@@ -154,7 +163,7 @@ class Section:
                 return self.clazz
             if item == 'name':
                 return self.name
-            if item not in self.fields:
+            if item not in self.all_fields:
                 return None
             return self.all_fields[item]
         else:
@@ -224,11 +233,20 @@ class Section:
         return created
 
     @staticmethod
-    def _parse_items(cfg: Cfg, items: [any], parser: configparser.ConfigParser):
+    def _parse_array(cfg: Cfg, items: [any], parser: configparser.ConfigParser):
         build = []
         for item in items:
             value = item.strip()
             build.append(Section._parse_item(cfg, value, parser))
+        return build
+
+    @staticmethod
+    def _parse_dict(cfg: Cfg, items: [any], parser: configparser.ConfigParser):
+        build = {}
+        for item in items:
+            kv = item.strip()
+            key, value = kv.split(':', 1)
+            build[key.strip()] = Section._parse_item(cfg, value, parser)
         return build
 
     #
@@ -240,7 +258,7 @@ class Section:
 
         m = re.match(_QUOTED_PATTERN, value)
         if m:
-            return m.group(1) if m.group(1) is not None else m.group(2)
+            return Section._unescape(m.group(1)) if m.group(1) is not None else Section._unescape(m.group(2))
         m = re.match(_RE_PATTERN, value)
         if m:
             return re.compile(m.group(1))
@@ -252,18 +270,22 @@ class Section:
             return int(float(value))
         if re.match(_FLOAT_PATTERN, value):
             return float(value)
-        if re.match(_FLOAT_EXP_PATTERN, value):
+        if re.match(_FLOAT_PATTERN_2, value):
             return float(value)
-        if re.match(_BOOL_PATTERN, value):
+        if re.match(_BOOL_PATTERN, value.lower()):
             return Section._bool_value(value)
         if value.startswith('[') and value.endswith(']'):
-            # todo: rewrite
+            # array
             expression = value[1:-1]
-            return Section._parse_items(cfg, Section._split_expression(expression), parser)
+            return Section._parse_array(cfg, Section._split_expression(expression, check=True), parser)
+        if value.startswith('{') and value.endswith('}'):
+            # dictionary
+            expression = value[1:-1]
+            return Section._parse_dict(cfg, Section._split_expression(expression, check=True), parser)
         ref = Section._reference(cfg, value)
         if ref is not None:
             return ref
-        return value
+        return Section._unescape(value)
 
     @staticmethod
     def _resolve_ref(value: any):
@@ -275,9 +297,21 @@ class Section:
                     value[i] = Section._resolve_ref(inner_value)
                 elif isinstance(inner_value, list):
                     value[i] = Section._resolve_ref(inner_value)
+                elif isinstance(inner_value, dict):
+                    value[i] = Section._resolve_ref(inner_value)
                 elif isinstance(inner_value, Section):
                     inner_value.resolve_refs()
-        if isinstance(value, Section):
+        elif isinstance(value, dict):
+            for key, inner_value in value.items():
+                if isinstance(inner_value, _Ref):
+                    value[key] = Section._resolve_ref(inner_value)
+                elif isinstance(inner_value, list):
+                    value[key] = Section._resolve_ref(inner_value)
+                elif isinstance(inner_value, dict):
+                    value[key] = Section._resolve_ref(inner_value)
+                elif isinstance(inner_value, Section):
+                    inner_value.resolve_refs()
+        elif isinstance(value, Section):
             value.resolve_refs()
             return value
         return value
@@ -300,17 +334,43 @@ class Section:
         return _Ref(cfg, qualifier)
 
     @staticmethod
-    def _split_expression(expression: str) -> [str]:
+    def _unescape(value: str) -> str:
+        build = ""
+        escaped = False
+        for char in value:
+            if char == '\\' and not escaped:
+                escaped = True
+                continue
+            build += char
+        return build
+
+    @staticmethod
+    def _split_expression(expression: str, check: bool = False) -> [str]:
         build = []
         item = ""
         capture_until = []
+        escaped = ''
+        quoted = False
         for char in expression:
-            if char == '[':
+            if char == '\\' and not escaped:
+                item += char
+                escaped = True
+                continue
+            if escaped:
+                item += char
+                escaped = False
+                continue
+
+            if char == '[' and not quoted:
                 capture_until.append(']')
-            elif char == '\'' and (len(capture_until) == 0 or capture_until[-1] != '\''):
-                capture_until.append('\'')
-            # elif char == '{':
-            #     capture_until.append('}')
+            elif char == '{' and not quoted:
+                capture_until.append('}')
+            elif (char == '\'' or char == '"') and not quoted:
+                capture_until.append(char)
+                quoted = True
+            elif quoted and char == capture_until[-1]:
+                quoted = False
+                capture_until.pop()
             elif len(capture_until) > 0 and char == capture_until[-1]:
                 capture_until.pop()
             elif len(capture_until) == 0 and char == ',':
@@ -356,4 +416,3 @@ class Section:
             if isinstance(value, Section):
                 value._set_properties()
             setattr(self, field, value)  # <-- punch line
-
