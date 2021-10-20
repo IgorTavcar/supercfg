@@ -4,7 +4,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional
 from typing import Union
 
 _SUPERCLASS_PATTERN = re.compile(r'^[^(]+\(([^)]+)\)')
@@ -27,6 +27,7 @@ class Cfg:
         self._path = path
         self._parser = parser
         self._sections = None
+        self._cached_cfgs = None
 
     @property
     def path(self) -> str:
@@ -53,14 +54,21 @@ class Cfg:
     def options(self, section: str):
         return self.sections[section]
 
-    def parse_other_cfg(self, name):
+    def parse_other_cfg(self, name, cache: bool = True):
         file = "{0}.cfg".format(os.path.join(self.dir, name))
         if file == self._path:
             return None
 
-        if os.path.exists(file):
-            return Cfg.parse(file)
+        if cache and self._cached_cfgs and file in self._cached_cfgs:
+            return self._cached_cfgs[file]
 
+        if os.path.exists(file):
+            parsed = Cfg.parse(file)
+            if cache:
+                if self._cached_cfgs is None:
+                    self._cached_cfgs = {}
+                self._cached_cfgs[file] = parsed
+            return parsed
         return None
 
     @staticmethod
@@ -82,6 +90,10 @@ class Cfg:
     def __getitem__(self, item):
         path = item.split('/')
         if len(path) == 1:
+            qualifier = path[0]
+            resolved = Section.resolve_reference(self, qualifier)
+            if resolved:
+                return resolved
             return self.sections[path[0]]
         return self._value_at(None, path)
 
@@ -210,6 +222,13 @@ class Section:
         self._set_properties()
 
     @staticmethod
+    def resolve_reference(cfg: Cfg, qualifier: str):
+        ref = Section._reference(cfg, qualifier, only_other=True)
+        if ref:
+            return Section._resolve_ref(ref)
+        return None
+
+    @staticmethod
     def parse(cfg: Cfg, key: str):
         parser = cfg.parser
         if key not in parser:
@@ -285,7 +304,7 @@ class Section:
         ref = Section._reference(cfg, value)
         if ref is not None:
             return ref
-        return Section._unescape(value)
+        return Section._unescape(value).strip()
 
     @staticmethod
     def _resolve_ref(value: any):
@@ -317,19 +336,22 @@ class Section:
         return value
 
     @staticmethod
-    def _reference(cfg: Cfg, qualifier: str):
+    def _reference(cfg: Cfg, qualifier: str, only_other: bool = False) -> Optional[_Ref]:
         # qualifier example: dataset::articles-64/layout/tokenizer/vocab_size@articles
         clazz, q = Section._split_at_2colons(qualifier)
         if q is None:
             return None
 
         split_at_monkey = Section._split_at_monkey(q)
-        if split_at_monkey is not None:
+        if split_at_monkey:
             path, cfg_name = split_at_monkey
             cfg2 = cfg.parse_other_cfg(cfg_name)
             if cfg2 is not None:
                 return Section._reference(cfg2, "{}::{}".format(clazz, path))
             raise Exception("no such cfg: {}.cfg, from: {}, at: {}".format(cfg_name, qualifier, cfg.dir))
+
+        if only_other:
+            return None
 
         return _Ref(cfg, qualifier)
 
