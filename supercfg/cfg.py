@@ -1,11 +1,11 @@
 import configparser
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple, Optional
-from typing import Union
+from typing import Tuple, Optional, Callable, AnyStr, Match
 
 _SUPERCLASS_PATTERN = re.compile(r'^[^(]+\(([^)]+)\)')
 _NONE_PATTERN = re.compile(r'None|none|NONE')
@@ -17,6 +17,7 @@ _BOOL_PATTERN = re.compile(r'^(true|false)$')
 _QUOTED_PATTERN = re.compile(r"'(.*)'|\"(.*)\"")
 _RE_PATTERN = re.compile(r"pattern:(.+)")
 _SECT_PATTERN = re.compile(r"(.+)::(.+)")
+_TEMPLATE_PATTERN = re.compile(r'\$\(([a-zA-Z0-9_]+)\)')
 
 
 #
@@ -42,12 +43,13 @@ class Cfg:
         return self._parser
 
     @property
-    def sections(self):
+    def sections(self, template_resolver: Optional[Callable[[Match[AnyStr]], AnyStr]] = None):
         if self._sections is not None:
             return self._sections
 
         self._sections = self._parse_sections()
         self._resolve_sect_refs()
+        self._resolve_templates(template_resolver)
 
         return self._sections
 
@@ -112,6 +114,10 @@ class Cfg:
     def _resolve_sect_refs(self):
         for _, sect in self._sections.items():
             sect.resolve_refs()
+
+    def _resolve_templates(self, template_resolver: Optional[Callable[[Match[AnyStr]], AnyStr]]):
+        for _, sect in self._sections.items():
+            sect.resolve_templates(template_resolver)
 
     def _value_at(self, section, path: [str]):
         if len(path) == 0:
@@ -188,11 +194,15 @@ class Section:
         return 2 + len(self.all_fields)
 
     @property
+    def identifier(self) -> str:
+        return '{}::{}'.format(self.clazz, self.name)
+
+    @property
     def all_fields(self) -> dict:
         if self._all_fields:
             return self._all_fields
         if self._super:
-            build = self._super.all_fields
+            build = self._super.all_fields.copy()
         else:
             build = {}
         build.update(self.fields)
@@ -220,6 +230,24 @@ class Section:
             self.fields[field] = Section._resolve_ref(value)
 
         self._set_properties()
+
+    def resolve_templates(self, template_resolver: Optional[Callable[[Match[AnyStr]], AnyStr]] = None):
+        if template_resolver is None:
+            template_resolver = self._template_resolver
+
+        for field, value in self.fields.copy().items():
+            if isinstance(value, str):
+                self.fields[field] = _TEMPLATE_PATTERN.sub(template_resolver, value)
+                self._all_fields[field] = self.fields[field]
+
+    @staticmethod
+    def _template_resolver(match: Match[AnyStr]) -> str:
+        template = match[1]
+        if template == 'TIMESTAMP':
+            return "{}".format(time.strftime("%Y%m%d_%H%M%S"))
+        elif template == 'UUID':
+            return str(uuid.uuid4())
+        return match[0]
 
     @staticmethod
     def resolve_reference(cfg: Cfg, qualifier: str):
@@ -264,8 +292,12 @@ class Section:
         build = {}
         for item in items:
             kv = item.strip()
-            key, value = kv.split(':', 1)
-            build[key.strip()] = Section._parse_item(cfg, value, parser)
+            key, value = kv.split('=>', 1)
+            m = re.match(_QUOTED_PATTERN, key.strip())
+            if m:
+                key = Section._unescape(m.group(1)) if m.group(1) is not None else Section._unescape(m.group(2))
+
+            build[key.strip()] = Section._parse_item(cfg, value.strip(), parser)
         return build
 
     #
@@ -320,6 +352,7 @@ class Section:
                     value[i] = Section._resolve_ref(inner_value)
                 elif isinstance(inner_value, Section):
                     inner_value.resolve_refs()
+                    inner_value.resolve_templates()
         elif isinstance(value, dict):
             for key, inner_value in value.items():
                 if isinstance(inner_value, _Ref):
@@ -330,8 +363,10 @@ class Section:
                     value[key] = Section._resolve_ref(inner_value)
                 elif isinstance(inner_value, Section):
                     inner_value.resolve_refs()
+                    inner_value.resolve_templates()
         elif isinstance(value, Section):
             value.resolve_refs()
+            value.resolve_templates()
             return value
         return value
 
@@ -421,14 +456,14 @@ class Section:
         return parts[0].strip(), parts[1].strip()
 
     @staticmethod
-    def _split_at_monkey(key: str) -> Union[None, Tuple[str, str]]:
+    def _split_at_monkey(key: str) -> Optional[Tuple[str, str]]:
         parts = key.split('@')
         if len(parts) != 2:
             return None
         return parts[0].strip(), parts[1].strip()
 
     @staticmethod
-    def _bool_value(token: Union[None, str], default=False) -> bool:
+    def _bool_value(token: Optional[str], default=False) -> bool:
         if token is None:
             return default
         return token.lower() == 'true'

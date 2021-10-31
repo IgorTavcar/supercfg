@@ -8,7 +8,7 @@ class TestCfg(TestCase):
     def test_dict(self):
         script = """
             [a::1]
-            value = {f1:'a', f2:100}
+            value = {f1 => 'a', f2 => 100}
         """
 
         cfg = Cfg.parse_string(script)
@@ -17,7 +17,7 @@ class TestCfg(TestCase):
     def test_complex_dict(self):
         script = """
             [a::1]
-            value = {f1:'a{{\\'', f2:"b}\\"]"}
+            value = {f1 => 'a{{\\'', f2 => "b}\\"]"}
         """
 
         cfg = Cfg.parse_string(script)
@@ -27,7 +27,7 @@ class TestCfg(TestCase):
     def test_complex_dict_in_array(self):
         script = """
             [a::1]
-            value = [1, 2, {f1:'a{{\\'', f2:"b}\\"]"}, 4]
+            value = [1, 2, {f1 =>'a{{\\'', f2 => "b}\\"]"}, 4]
         """
 
         cfg = Cfg.parse_string(script)
@@ -79,7 +79,7 @@ class TestCfg(TestCase):
             bool_types = [true, false, TrUe]
             string_types = [a, ha ho, 'Q::waw', 'a\\'b']
             ref_cell0 = [a, q::mmm/field1]
-            ref_cell1 = {x:111, k:q::mmm/field1}
+            ref_cell1 = {x => 111, k => q::mmm/field1}
             regex_pattern = pattern:^([+-]?[0-9_]+)$
         """
         cfg = Cfg.parse_string(script)['a::1']
