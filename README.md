@@ -8,6 +8,7 @@ This module is based on the ConfigParser class and provides a basic configuratio
   * array
   * dict
 * compiled regex pattern
+* enums
 * cross-references (in-file and cross-file)
   * section reference
   * field reference

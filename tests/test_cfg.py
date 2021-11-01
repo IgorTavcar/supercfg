@@ -1,6 +1,13 @@
+from enum import Enum
 from unittest import TestCase
 
 from supercfg import Cfg
+
+
+class Choices(str, Enum):
+    A = 'A'
+    B = 'B'
+    C = 'C'
 
 
 class TestCfg(TestCase):
@@ -81,6 +88,7 @@ class TestCfg(TestCase):
             ref_cell0 = [a, q::mmm/field1]
             ref_cell1 = {x => 111, k => q::mmm/field1}
             regex_pattern = pattern:^([+-]?[0-9_]+)$
+            choice = enum:tests.test_cfg.Choices.B
         """
         cfg = Cfg.parse_string(script)['a::1']
 
@@ -99,4 +107,7 @@ class TestCfg(TestCase):
         self.assertEqual('b', cfg.ref_cell1['k'])
 
         self.assertTrue(cfg.regex_pattern.match('-22_000'))
+
         self.assertFalse(cfg.regex_pattern.match('-22_00x'))
+
+        self.assertEqual(Choices.B, cfg.choice)

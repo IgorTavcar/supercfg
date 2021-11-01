@@ -4,6 +4,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Tuple, Optional, Callable, AnyStr, Match
 
@@ -18,6 +19,7 @@ _QUOTED_PATTERN = re.compile(r"'(.*)'|\"(.*)\"")
 _RE_PATTERN = re.compile(r"pattern:(.+)")
 _SECT_PATTERN = re.compile(r"(.+)::(.+)")
 _TEMPLATE_PATTERN = re.compile(r'\$\(([a-zA-Z0-9_]+)\)')
+_ENUM_PATTERN = re.compile(r"enum:(.+)")
 
 
 #
@@ -240,6 +242,16 @@ class Section:
                 self.fields[field] = _TEMPLATE_PATTERN.sub(template_resolver, value)
                 self._all_fields[field] = self.fields[field]
 
+    # private
+
+    def _set_properties(self):
+        for field, value in self.all_fields.items():
+            if isinstance(value, Section):
+                value._set_properties()
+            setattr(self, field, value)  # <-- punch line
+
+    # helpers
+
     @staticmethod
     def _template_resolver(match: Match[AnyStr]) -> str:
         template = match[1]
@@ -300,8 +312,6 @@ class Section:
             build[key.strip()] = Section._parse_item(cfg, value.strip(), parser)
         return build
 
-    #
-
     @staticmethod
     def _parse_item(cfg: Cfg, value: any, parser: configparser.ConfigParser):
         if value in parser:
@@ -313,6 +323,9 @@ class Section:
         m = re.match(_RE_PATTERN, value)
         if m:
             return re.compile(m.group(1))
+        m = re.match(_ENUM_PATTERN, value)
+        if m:
+            return Section._enum_value(m.group(1))
         if re.match(_NONE_PATTERN, value):
             return None
         if re.match(_INT_PATTERN, value):
@@ -468,8 +481,21 @@ class Section:
             return default
         return token.lower() == 'true'
 
-    def _set_properties(self):
-        for field, value in self.all_fields.items():
-            if isinstance(value, Section):
-                value._set_properties()
-            setattr(self, field, value)  # <-- punch line
+    @staticmethod
+    def _enum_value(value: str) -> Enum:
+        parts = value.rsplit('.', 1)
+        constructor = Section._constructor(parts[0])
+        return constructor(parts[1])
+
+    @staticmethod
+    def _constructor(name: str):
+        parts = name.split('.')
+        if len(parts) == 1:
+            return globals()[parts[0]]
+        mod = None
+        for part in parts[:-1]:
+            if mod is None:
+                mod = __import__(part)
+            else:
+                mod = getattr(mod, part)
+        return getattr(mod, parts[-1])
