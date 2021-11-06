@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Tuple, Optional, Callable, AnyStr, Match
+from typing import Tuple, Optional, Callable, AnyStr, Match, Dict, Any
 
 _SUPERCLASS_PATTERN = re.compile(r'^[^(]+\(([^)]+)\)')
 _NONE_PATTERN = re.compile(r'None|none|NONE')
@@ -115,11 +115,11 @@ class Cfg:
 
     def _resolve_sect_refs(self):
         for _, sect in self._sections.items():
-            sect.resolve_refs()
+            sect.resolve()
 
     def _resolve_templates(self, template_resolver: Optional[Callable[[Match[AnyStr]], AnyStr]]):
         for _, sect in self._sections.items():
-            sect.resolve_templates(template_resolver)
+            sect._resolve_templates(template_resolver)
 
     def _value_at(self, section, path: [str]):
         if len(path) == 0:
@@ -153,11 +153,11 @@ class _Ref:
 class Section:
     clazz: str = None
     name: str = None
-    fields: dict = None
+    fields: Dict[str, Any] = None
 
     _superclass_id = None
     _super = None
-    _all_fields: dict = None
+    _all_fields: Dict[str, Any] = None
 
     def __post_init__(self):
         m = _SUPERCLASS_PATTERN.match(self.name)
@@ -169,13 +169,28 @@ class Section:
                 self._superclass_id = value
             self.name = self.name[:-(len(value) + 2)]
 
+    def __setitem__(self, item, value):
+        if isinstance(item, str):
+            if item == 'name':
+                self.name = value
+            elif item == 'clazz':
+                self.clazz = value
+            else:
+                self._all_fields[item] = value
+                self._set_attrs()
+        else:
+            raise Exception("assignment not supported for: {}".format(item))
+
     def __getitem__(self, item):
+        if self._all_fields is None:
+            self.resolve()
+
         if isinstance(item, int):
             if item == 0:
                 return 'clazz'
             if item == 1:
                 return 'name'
-            return list(self.all_fields.keys())[item - 2]
+            return list(self._all_fields.keys())[item - 2]
 
         path = item.split('/')
         if len(path) == 1:
@@ -183,7 +198,7 @@ class Section:
                 return self.clazz
             if item == 'name':
                 return self.name
-            if item not in self.all_fields:
+            if item not in self._all_fields:
                 return None
             return self.all_fields[item]
         else:
@@ -193,28 +208,22 @@ class Section:
             return None
 
     def __len__(self):
-        return 2 + len(self.all_fields)
+        return 2 + len(self._all_fields) if self._all_fields is not None else 0
 
     @property
     def identifier(self) -> str:
         return '{}::{}'.format(self.clazz, self.name)
 
     @property
-    def all_fields(self) -> dict:
-        if self._all_fields:
-            return self._all_fields
-        if self._super:
-            build = self._super.all_fields.copy()
-        else:
-            build = {}
-        build.update(self.fields)
-        self._all_fields = build
-        return build
+    def all_fields(self) -> Dict[str, Any]:
+        if self._all_fields is None:
+            raise Exception('illegal state')
+        return self._all_fields
 
     @property
     def to_dict(self):
         build = {'name': self.name, 'clazz': self.clazz}
-        for k, v in self.all_fields.items():
+        for k, v in self._all_fields.items():
             if isinstance(v, Section):
                 build[k] = v.to_dict
             else:
@@ -224,30 +233,58 @@ class Section:
     def get(self, key: str, default_value):
         return self[key] if self[key] is not None else default_value
 
-    def resolve_refs(self):
-        if self._super and isinstance(self._super, _Ref):
-            self._super = self._super.cfg[self._super.path]
+    # inner
 
-        for field, value in self.fields.copy().items():
-            self.fields[field] = Section._resolve_ref(value)
+    def resolve(self):
+        self._resolve_super()
 
-        self._set_properties()
+        self._resolve_fields()
 
-    def resolve_templates(self, template_resolver: Optional[Callable[[Match[AnyStr]], AnyStr]] = None):
-        if template_resolver is None:
-            template_resolver = self._template_resolver
+        for field, value in self._all_fields.copy().items():
+            self._all_fields[field] = Section._resolve_ref(value)
 
-        for field, value in self.fields.copy().items():
-            if isinstance(value, str):
-                self.fields[field] = _TEMPLATE_PATTERN.sub(template_resolver, value)
-                self._all_fields[field] = self.fields[field]
+        self._resolve_templates()
+        self._set_attrs()
 
     # private
 
-    def _set_properties(self):
-        for field, value in self.all_fields.items():
+    def _resolve_fields(self):
+        if self._all_fields is not None:
+            return
+        if self._super is not None:
+            parent = self._resolve_super()
+            parent._resolve_fields()
+            self._all_fields = parent._all_fields.copy()
+        else:
+            self._all_fields = {}
+
+        for field, value in self.fields.items():
+            if field in self._all_fields:
+                existed = self._all_fields[field]
+                if isinstance(existed, dict):
+                    existed.update(value)
+                    continue
+            self._all_fields[field] = value
+
+    def _resolve_templates(self, template_resolver: Optional[Callable[[Match[AnyStr]], AnyStr]] = None):
+        if template_resolver is None:
+            template_resolver = self._template_resolver
+
+        for field, value in self._all_fields.copy().items():
+            if isinstance(value, str):
+                self._all_fields[field] = _TEMPLATE_PATTERN.sub(template_resolver, value)
+
+    def _resolve_super(self) -> 'Section':
+        if self._super and isinstance(self._super, _Ref):
+            self._super = self._super.cfg[self._super.path]
+            return self._resolve_super()
+        return self._super
+
+    def _set_attrs(self):
+        # note: this will resolve a whole inheritance branch
+        for field, value in self._all_fields.items():
             if isinstance(value, Section):
-                value._set_properties()
+                value._set_attrs()
             setattr(self, field, value)  # <-- punch line
 
     # helpers
@@ -364,8 +401,7 @@ class Section:
                 elif isinstance(inner_value, dict):
                     value[i] = Section._resolve_ref(inner_value)
                 elif isinstance(inner_value, Section):
-                    inner_value.resolve_refs()
-                    inner_value.resolve_templates()
+                    inner_value.resolve()
         elif isinstance(value, dict):
             for key, inner_value in value.items():
                 if isinstance(inner_value, _Ref):
@@ -375,11 +411,9 @@ class Section:
                 elif isinstance(inner_value, dict):
                     value[key] = Section._resolve_ref(inner_value)
                 elif isinstance(inner_value, Section):
-                    inner_value.resolve_refs()
-                    inner_value.resolve_templates()
+                    inner_value.resolve()
         elif isinstance(value, Section):
-            value.resolve_refs()
-            value.resolve_templates()
+            value.resolve()
             return value
         return value
 
