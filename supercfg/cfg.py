@@ -262,8 +262,7 @@ class Section:
             if field in self._all_fields:
                 existed = self._all_fields[field]
                 if isinstance(existed, dict):
-                    existed.update(value)
-                    continue
+                    value.update(existed)
             self._all_fields[field] = value
 
     def _resolve_templates(self, template_resolver: Optional[Callable[[Match[AnyStr]], AnyStr]] = None):
