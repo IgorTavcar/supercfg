@@ -169,6 +169,13 @@ class Section:
                 self._superclass_id = value
             self.name = self.name[:-(len(value) + 2)]
 
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        if name != 'name' and name != 'clazz' and name != 'fields' and not name.startswith('_'):
+            self._all_fields[name] = value
+            if name in self.fields:
+                self.fields[name] = value
+
     def __setitem__(self, item, value):
         if isinstance(item, str):
             if item == 'name':
@@ -176,6 +183,8 @@ class Section:
             elif item == 'clazz':
                 self.clazz = value
             else:
+                if item in self.fields:
+                    self.fields[item] = value
                 self._all_fields[item] = value
                 self._set_attrs()
         else:
